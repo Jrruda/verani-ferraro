@@ -61,6 +61,6 @@ export const storeConfig = {
   },
   checkout: {
     provider: "mercado-pago",
-    enabled: false,
+    enabled: true,
   },
 } as const;
