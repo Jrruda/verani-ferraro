@@ -33,8 +33,8 @@ export const storeConfig = {
     ],
   },
   freeShipping: {
-    enabled: false,
-    label: "Frete grátis para todo Brasil",
+    enabled: true,
+    label: "Frete grátis para todo o Brasil",
   },
   installments: {
     enabled: false,
