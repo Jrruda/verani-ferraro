@@ -337,6 +337,21 @@ async function createPreference(
   const areaCode = Number(customer.phone.slice(0, 2));
   const phoneNumber = Number(customer.phone.slice(2));
 
+  const payer = env.MERCADO_PAGO_ENV === "test"
+    ? { email: "test@testuser.com" }
+    : {
+        name: person.name,
+        surname: person.surname,
+        email: customer.email,
+        phone: { area_code: areaCode, number: phoneNumber },
+        identification: { type: "CPF", number: customer.document },
+        address: {
+          zip_code: customer.zipCode,
+          street_name: customer.street,
+          street_number: streetNumber,
+        },
+      };
+
   const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
     method: "POST",
     headers: {
@@ -351,18 +366,7 @@ async function createPreference(
         currency_id: quote.currency,
         unit_price: line.unitPriceCents / 100,
       })),
-      payer: {
-        name: person.name,
-        surname: person.surname,
-        email: customer.email,
-        phone: { area_code: areaCode, number: phoneNumber },
-        identification: { type: "CPF", number: customer.document },
-        address: {
-          zip_code: customer.zipCode,
-          street_name: customer.street,
-          street_number: streetNumber,
-        },
-      },
+      payer,
       shipments: {
         local_pickup: false,
         cost: 0,
@@ -563,7 +567,7 @@ export default {
         return json(env, {
           ok: db?.ok === 1,
           service: "verani-ferraro-api",
-          version: "0.5.0",
+          version: "0.5.1",
           database: db?.ok === 1 ? "connected" : "unavailable",
           mercadoPago: env.MERCADO_PAGO_ACCESS_TOKEN ? "configured" : "missing",
           webhook: env.MERCADO_PAGO_WEBHOOK_SECRET ? "configured" : "missing",
