@@ -13,6 +13,20 @@ export type CheckoutItem =
       quantity: number;
     };
 
+export type CheckoutCustomer = {
+  fullName: string;
+  email: string;
+  phone: string;
+  document: string;
+  zipCode: string;
+  street: string;
+  number: string;
+  complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+};
+
 type CheckoutResponse = {
   checkoutUrl?: string;
   error?: string;
@@ -47,7 +61,7 @@ function apiBaseUrl() {
   return (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).trim().replace(/\/$/, "");
 }
 
-export async function startCheckout(items: CartItem[]) {
+export async function startCheckout(items: CartItem[], customer: CheckoutCustomer) {
   if (typeof window === "undefined") {
     throw new Error("O checkout deve ser iniciado no navegador.");
   }
@@ -60,7 +74,10 @@ export async function startCheckout(items: CartItem[]) {
     response = await fetch(`${apiUrl}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: buildCheckoutItems(items) }),
+      body: JSON.stringify({
+        items: buildCheckoutItems(items),
+        customer,
+      }),
     });
   } catch {
     throw new Error("Não foi possível conectar ao pagamento agora. Tente novamente em instantes.");
