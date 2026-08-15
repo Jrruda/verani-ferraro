@@ -18,6 +18,8 @@ type CheckoutResponse = {
   error?: string;
 };
 
+const DEFAULT_API_URL = "https://verani-ferraro-api.jdearrudaalmeida.workers.dev";
+
 export function buildCheckoutItems(items: CartItem[]): CheckoutItem[] {
   return items.map((item) => {
     if (item.kind === "product") {
@@ -42,7 +44,7 @@ export function buildCheckoutItems(items: CartItem[]): CheckoutItem[] {
 }
 
 function apiBaseUrl() {
-  return (process.env.NEXT_PUBLIC_API_URL ?? "").trim().replace(/\/$/, "");
+  return (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).trim().replace(/\/$/, "");
 }
 
 export async function startCheckout(items: CartItem[]) {
@@ -52,9 +54,6 @@ export async function startCheckout(items: CartItem[]) {
   if (!items.length) throw new Error("Seu carrinho está vazio.");
 
   const apiUrl = apiBaseUrl();
-  if (!apiUrl) {
-    throw new Error("O pagamento ainda está em configuração. Tente novamente em breve.");
-  }
 
   let response: Response;
   try {
