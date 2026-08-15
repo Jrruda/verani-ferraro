@@ -1,0 +1,4 @@
+import type { Metadata } from "next";
+import { PolicyPage } from "@/components/policy-page";
+export const metadata: Metadata = { title: "Termos de Uso" };
+export default function Page() { return <PolicyPage eyebrow="Políticas" title="Termos de uso" intro="Estrutura inicial para os termos comerciais e de uso do e-commerce Verani Ferraro."><section><h2 className="font-serif text-2xl text-ink">Catálogo e informações</h2><p className="mt-3">As fotografias reais são a referência visual das peças. Nomes temporários, preços individuais e especificações técnicas serão atualizados após confirmação comercial.</p></section><section><h2 className="font-serif text-2xl text-ink">Compra</h2><p className="mt-3">A finalização da compra permanecerá indisponível até a ativação segura do novo checkout e a revisão das condições da operação.</p></section></PolicyPage>; }

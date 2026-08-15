@@ -1,0 +1,4 @@
+import type { Metadata } from "next";
+import { PolicyPage } from "@/components/policy-page";
+export const metadata: Metadata = { title: "Política de Trocas" };
+export default function Page() { return <PolicyPage eyebrow="Políticas" title="Trocas e devoluções" intro="Estrutura preparada para receber a política operacional definitiva da Verani Ferraro."><section><h2 className="font-serif text-2xl text-ink">Condição ainda não publicada</h2><p className="mt-3">O prazo, os critérios e o canal oficial de solicitação precisam ser confirmados antes da abertura da loja. Nenhum prazo provisório será apresentado como compromisso comercial.</p></section><section><h2 className="font-serif text-2xl text-ink">Antes da publicação</h2><p className="mt-3">Será necessário definir logística reversa, análise do estado do produto, tratamento de avarias e responsabilidades de frete.</p></section></PolicyPage>; }

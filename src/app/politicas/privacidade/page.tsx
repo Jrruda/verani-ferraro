@@ -1,0 +1,4 @@
+import type { Metadata } from "next";
+import { PolicyPage } from "@/components/policy-page";
+export const metadata: Metadata = { title: "Política de Privacidade" };
+export default function Page() { return <PolicyPage eyebrow="Políticas" title="Privacidade" intro="Esta página documenta a estrutura inicial de privacidade e deverá receber revisão jurídica antes da operação pública."><section><h2 className="font-serif text-2xl text-ink">Dados e finalidade</h2><p className="mt-3">A aplicação local desta V1 não envia dados pessoais a serviços externos. O carrinho é persistido apenas no navegador do visitante.</p></section><section><h2 className="font-serif text-2xl text-ink">Integrações futuras</h2><p className="mt-3">Checkout, analytics e pixel estão preparados, porém desativados até a configuração de credenciais, consentimento e documentação aplicável.</p></section></PolicyPage>; }
