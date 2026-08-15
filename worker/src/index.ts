@@ -1,5 +1,7 @@
 type Env = {
   FRONTEND_ORIGIN: string;
+  MERCADO_PAGO_ACCESS_TOKEN: string;
+  MERCADO_PAGO_ENV: "test" | "production";
   DB: D1Database;
 };
 
@@ -38,6 +40,14 @@ type QuoteLine = {
   glassesId?: string;
 };
 
+type MercadoPagoPreference = {
+  id?: string;
+  init_point?: string;
+  sandbox_init_point?: string;
+  message?: string;
+  error?: string;
+};
+
 class HttpError extends Error {
   status: number;
 
@@ -74,17 +84,11 @@ function assertQuantity(value: unknown) {
 }
 
 function parseCheckoutItems(body: unknown): CheckoutItem[] {
-  if (!body || typeof body !== "object") {
-    throw new HttpError(400, "Payload inválido.");
-  }
+  if (!body || typeof body !== "object") throw new HttpError(400, "Payload inválido.");
 
   const items = (body as { items?: unknown }).items;
-  if (!Array.isArray(items) || items.length === 0) {
-    throw new HttpError(400, "Seu carrinho está vazio.");
-  }
-  if (items.length > 20) {
-    throw new HttpError(400, "Carrinho com itens demais para uma única compra.");
-  }
+  if (!Array.isArray(items) || items.length === 0) throw new HttpError(400, "Seu carrinho está vazio.");
+  if (items.length > 20) throw new HttpError(400, "Carrinho com itens demais para uma única compra.");
 
   return items.map((raw): CheckoutItem => {
     if (!raw || typeof raw !== "object") throw new HttpError(400, "Item inválido.");
@@ -100,19 +104,12 @@ function parseCheckoutItems(body: unknown): CheckoutItem[] {
 
     if (item.kind === "executive-set") {
       if (
-        typeof item.watchId !== "string" ||
-        !item.watchId.trim() ||
-        typeof item.glassesId !== "string" ||
-        !item.glassesId.trim()
+        typeof item.watchId !== "string" || !item.watchId.trim() ||
+        typeof item.glassesId !== "string" || !item.glassesId.trim()
       ) {
         throw new HttpError(400, "Seleção do Executive Set inválida.");
       }
-      return {
-        kind: "executive-set",
-        watchId: item.watchId,
-        glassesId: item.glassesId,
-        quantity,
-      };
+      return { kind: "executive-set", watchId: item.watchId, glassesId: item.glassesId, quantity };
     }
 
     throw new HttpError(400, "Tipo de item inválido.");
@@ -126,9 +123,7 @@ async function getProduct(env: Env, id: string) {
        FROM products
       WHERE id = ?1
       LIMIT 1`,
-  )
-    .bind(id)
-    .first<ProductRow>();
+  ).bind(id).first<ProductRow>();
 }
 
 async function getExecutiveSetOffer(env: Env) {
@@ -141,14 +136,8 @@ async function getExecutiveSetOffer(env: Env) {
 }
 
 function assertAvailable(product: ProductRow | null, quantity: number) {
-  if (!product || product.active !== 1) {
-    throw new HttpError(400, "Um dos produtos não está disponível.");
-  }
-  if (
-    product.track_inventory === 1 &&
-    product.stock_quantity !== null &&
-    product.stock_quantity < quantity
-  ) {
+  if (!product || product.active !== 1) throw new HttpError(400, "Um dos produtos não está disponível.");
+  if (product.track_inventory === 1 && product.stock_quantity !== null && product.stock_quantity < quantity) {
     throw new HttpError(409, `${product.name} não possui estoque suficiente.`);
   }
 }
@@ -180,21 +169,14 @@ async function buildQuote(env: Env, items: CheckoutItem[]) {
       getProduct(env, item.glassesId),
     ]);
 
-    if (!offer || offer.active !== 1) {
-      throw new HttpError(400, "The Executive Set não está disponível.");
-    }
-
+    if (!offer || offer.active !== 1) throw new HttpError(400, "The Executive Set não está disponível.");
     assertAvailable(watch, item.quantity);
     assertAvailable(glasses, item.quantity);
 
     if (!watch || watch.category !== "watch" || watch.eligible_for_executive_set !== 1) {
       throw new HttpError(400, "Relógio inválido para o Executive Set.");
     }
-    if (
-      !glasses ||
-      !["sunglasses", "optical-frame"].includes(glasses.category) ||
-      glasses.eligible_for_executive_set !== 1
-    ) {
+    if (!glasses || !["sunglasses", "optical-frame"].includes(glasses.category) || glasses.eligible_for_executive_set !== 1) {
       throw new HttpError(400, "Óculos inválido para o Executive Set.");
     }
 
@@ -214,13 +196,104 @@ async function buildQuote(env: Env, items: CheckoutItem[]) {
   return { currency: "BRL", totalCents, items: lines };
 }
 
+async function saveDraftOrder(env: Env, quote: Awaited<ReturnType<typeof buildQuote>>) {
+  const orderId = crypto.randomUUID();
+  const externalReference = `vf-${orderId}`;
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `INSERT INTO orders (id, external_reference, status, currency, subtotal_cents, shipping_cents, total_cents)
+       VALUES (?1, ?2, 'draft', ?3, ?4, 0, ?4)`,
+    ).bind(orderId, externalReference, quote.currency, quote.totalCents),
+  ];
+
+  for (const line of quote.items) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO order_items
+          (order_id, kind, product_id, offer_id, watch_id, glasses_id, name_snapshot, unit_price_cents, quantity, line_total_cents)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      ).bind(
+        orderId,
+        line.kind,
+        line.productId ?? null,
+        line.kind === "executive-set" ? "executive-set" : null,
+        line.watchId ?? null,
+        line.glassesId ?? null,
+        line.name,
+        line.unitPriceCents,
+        line.quantity,
+        line.lineTotalCents,
+      ),
+    );
+  }
+
+  await env.DB.batch(statements);
+  return { orderId, externalReference };
+}
+
+async function createMercadoPagoPreference(
+  env: Env,
+  quote: Awaited<ReturnType<typeof buildQuote>>,
+  order: { orderId: string; externalReference: string },
+) {
+  if (!env.MERCADO_PAGO_ACCESS_TOKEN) {
+    throw new HttpError(503, "Mercado Pago ainda não foi configurado no servidor.");
+  }
+
+  const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.MERCADO_PAGO_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      items: quote.items.map((line) => ({
+        id: line.kind === "product" ? line.productId : "executive-set",
+        title: line.name,
+        quantity: line.quantity,
+        currency_id: quote.currency,
+        unit_price: line.unitPriceCents / 100,
+      })),
+      external_reference: order.externalReference,
+      back_urls: {
+        success: `${env.FRONTEND_ORIGIN}/pagamento/sucesso`,
+        pending: `${env.FRONTEND_ORIGIN}/pagamento/pendente`,
+        failure: `${env.FRONTEND_ORIGIN}/pagamento/erro`,
+      },
+      auto_return: "approved",
+      metadata: {
+        order_id: order.orderId,
+      },
+    }),
+  });
+
+  const result = (await response.json()) as MercadoPagoPreference;
+  if (!response.ok || !result.id) {
+    await env.DB.prepare("UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?1")
+      .bind(order.orderId)
+      .run();
+    throw new HttpError(502, result.message || result.error || "Mercado Pago recusou a criação do checkout.");
+  }
+
+  const checkoutUrl = env.MERCADO_PAGO_ENV === "production" ? result.init_point : result.sandbox_init_point;
+  if (!checkoutUrl) {
+    throw new HttpError(502, "Mercado Pago não retornou uma URL de checkout válida.");
+  }
+
+  await env.DB.prepare(
+    `UPDATE orders
+        SET status = 'pending', mercado_pago_preference_id = ?2, updated_at = datetime('now')
+      WHERE id = ?1`,
+  ).bind(order.orderId, result.id).run();
+
+  return { checkoutUrl, preferenceId: result.id, orderId: order.orderId };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
-    }
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(env) });
 
     try {
       if (request.method === "GET" && url.pathname === "/health") {
@@ -228,39 +301,33 @@ export default {
         return json(env, {
           ok: dbCheck?.ok === 1,
           service: "verani-ferraro-api",
-          version: "0.2.0",
+          version: "0.3.0",
           database: dbCheck?.ok === 1 ? "connected" : "unavailable",
+          mercadoPago: env.MERCADO_PAGO_ACCESS_TOKEN ? "configured" : "missing",
+          environment: env.MERCADO_PAGO_ENV || "test",
         });
       }
 
       if (request.method === "POST" && url.pathname === "/checkout/quote") {
         let body: unknown;
-        try {
-          body = await request.json();
-        } catch {
-          throw new HttpError(400, "JSON inválido.");
-        }
-
+        try { body = await request.json(); } catch { throw new HttpError(400, "JSON inválido."); }
         const items = parseCheckoutItems(body);
-        const quote = await buildQuote(env, items);
-        return json(env, quote);
+        return json(env, await buildQuote(env, items));
       }
 
       if (request.method === "POST" && url.pathname === "/checkout") {
-        return json(
-          env,
-          {
-            error: "Checkout ainda não ativado. A validação de preços já está no D1; Mercado Pago será conectado na próxima etapa.",
-          },
-          503,
-        );
+        let body: unknown;
+        try { body = await request.json(); } catch { throw new HttpError(400, "JSON inválido."); }
+        const items = parseCheckoutItems(body);
+        const quote = await buildQuote(env, items);
+        const order = await saveDraftOrder(env, quote);
+        const checkout = await createMercadoPagoPreference(env, quote, order);
+        return json(env, checkout);
       }
 
       return json(env, { error: "Rota não encontrada." }, 404);
     } catch (error) {
-      if (error instanceof HttpError) {
-        return json(env, { error: error.message }, error.status);
-      }
+      if (error instanceof HttpError) return json(env, { error: error.message }, error.status);
       console.error(error);
       return json(env, { error: "Erro interno ao processar a solicitação." }, 500);
     }
