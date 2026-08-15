@@ -37,6 +37,20 @@ type CheckoutItem =
   | { kind: "product"; productId: string; quantity: number }
   | { kind: "executive-set"; watchId: string; glassesId: string; quantity: number };
 
+type CustomerInput = {
+  fullName: string;
+  email: string;
+  phone: string;
+  document: string;
+  zipCode: string;
+  street: string;
+  number: string;
+  complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+};
+
 type QuoteLine = {
   kind: "product" | "executive-set";
   name: string;
@@ -99,6 +113,60 @@ function quantity(value: unknown) {
     throw new HttpError(400, "Quantidade inválida. Use um valor entre 1 e 10.");
   }
   return Number(value);
+}
+
+function cleanText(value: unknown, maxLength: number) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, maxLength) : "";
+}
+
+function digits(value: unknown, maxLength: number) {
+  return typeof value === "string" ? value.replace(/\D/g, "").slice(0, maxLength) : "";
+}
+
+function isValidCpf(value: string) {
+  const cpf = value.replace(/\D/g, "");
+  if (cpf.length !== 11 || /^(\d)\1{10}$/.test(cpf)) return false;
+  const check = (length: number) => {
+    let sum = 0;
+    for (let index = 0; index < length; index += 1) sum += Number(cpf[index]) * (length + 1 - index);
+    const remainder = (sum * 10) % 11;
+    return (remainder === 10 ? 0 : remainder) === Number(cpf[length]);
+  };
+  return check(9) && check(10);
+}
+
+function parseCustomer(body: unknown): CustomerInput {
+  if (!body || typeof body !== "object") throw new HttpError(400, "Dados do comprador não foram enviados.");
+  const raw = (body as { customer?: unknown }).customer;
+  if (!raw || typeof raw !== "object") throw new HttpError(400, "Preencha seus dados para entrega.");
+  const customer = raw as Record<string, unknown>;
+
+  const parsed: CustomerInput = {
+    fullName: cleanText(customer.fullName, 120),
+    email: cleanText(customer.email, 160).toLowerCase(),
+    phone: digits(customer.phone, 11),
+    document: digits(customer.document, 11),
+    zipCode: digits(customer.zipCode, 8),
+    street: cleanText(customer.street, 160),
+    number: digits(customer.number, 8),
+    complement: cleanText(customer.complement, 120),
+    neighborhood: cleanText(customer.neighborhood, 100),
+    city: cleanText(customer.city, 100),
+    state: cleanText(customer.state, 2).toUpperCase(),
+  };
+
+  if (parsed.fullName.length < 3) throw new HttpError(400, "Informe seu nome completo.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) throw new HttpError(400, "Informe um e-mail válido.");
+  if (parsed.phone.length < 10 || parsed.phone.length > 11) throw new HttpError(400, "Informe um telefone com DDD.");
+  if (!isValidCpf(parsed.document)) throw new HttpError(400, "Informe um CPF válido.");
+  if (parsed.zipCode.length !== 8) throw new HttpError(400, "Informe um CEP válido.");
+  if (parsed.street.length < 2) throw new HttpError(400, "Informe a rua ou avenida.");
+  if (!/^\d{1,8}$/.test(parsed.number) || Number(parsed.number) < 1) throw new HttpError(400, "Informe um número de endereço válido.");
+  if (parsed.neighborhood.length < 2) throw new HttpError(400, "Informe o bairro.");
+  if (parsed.city.length < 2) throw new HttpError(400, "Informe a cidade.");
+  if (!/^[A-Z]{2}$/.test(parsed.state)) throw new HttpError(400, "Informe a UF com 2 letras.");
+
+  return parsed;
 }
 
 function parseItems(body: unknown): CheckoutItem[] {
@@ -195,14 +263,38 @@ async function buildQuote(env: Env, items: CheckoutItem[]) {
   };
 }
 
-async function saveDraftOrder(env: Env, quote: Awaited<ReturnType<typeof buildQuote>>) {
+async function saveDraftOrder(
+  env: Env,
+  quote: Awaited<ReturnType<typeof buildQuote>>,
+  customer: CustomerInput,
+) {
   const orderId = crypto.randomUUID();
   const externalReference = `vf-${orderId}`;
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
-      `INSERT INTO orders (id,external_reference,status,currency,subtotal_cents,shipping_cents,total_cents)
-       VALUES (?1,?2,'draft',?3,?4,0,?4)`,
-    ).bind(orderId, externalReference, quote.currency, quote.totalCents),
+      `INSERT INTO orders
+       (id,external_reference,status,currency,subtotal_cents,shipping_cents,total_cents,
+        customer_email,customer_name,customer_phone,customer_document,
+        shipping_zip_code,shipping_street,shipping_number,shipping_complement,
+        shipping_neighborhood,shipping_city,shipping_state,shipping_country)
+       VALUES (?1,?2,'draft',?3,?4,0,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'BR')`,
+    ).bind(
+      orderId,
+      externalReference,
+      quote.currency,
+      quote.totalCents,
+      customer.email,
+      customer.fullName,
+      customer.phone,
+      customer.document,
+      customer.zipCode,
+      customer.street,
+      customer.number,
+      customer.complement || null,
+      customer.neighborhood,
+      customer.city,
+      customer.state,
+    ),
   ];
 
   for (const line of quote.items) {
@@ -228,12 +320,22 @@ async function saveDraftOrder(env: Env, quote: Awaited<ReturnType<typeof buildQu
   return { orderId, externalReference };
 }
 
+function splitName(fullName: string) {
+  const parts = fullName.trim().split(/\s+/);
+  return { name: parts[0] ?? fullName, surname: parts.slice(1).join(" ") };
+}
+
 async function createPreference(
   env: Env,
   quote: Awaited<ReturnType<typeof buildQuote>>,
   order: { orderId: string; externalReference: string },
+  customer: CustomerInput,
 ) {
   if (!env.MERCADO_PAGO_ACCESS_TOKEN) throw new HttpError(503, "Mercado Pago ainda não foi configurado no servidor.");
+  const person = splitName(customer.fullName);
+  const streetNumber = Number(customer.number);
+  const areaCode = Number(customer.phone.slice(0, 2));
+  const phoneNumber = Number(customer.phone.slice(2));
 
   const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
     method: "POST",
@@ -249,6 +351,31 @@ async function createPreference(
         currency_id: quote.currency,
         unit_price: line.unitPriceCents / 100,
       })),
+      payer: {
+        name: person.name,
+        surname: person.surname,
+        email: customer.email,
+        phone: { area_code: areaCode, number: phoneNumber },
+        identification: { type: "CPF", number: customer.document },
+        address: {
+          zip_code: customer.zipCode,
+          street_name: customer.street,
+          street_number: streetNumber,
+        },
+      },
+      shipments: {
+        local_pickup: false,
+        cost: 0,
+        free_shipping: true,
+        receiver_address: {
+          zip_code: customer.zipCode,
+          street_name: customer.street,
+          street_number: streetNumber,
+          city_name: customer.city,
+          state_name: customer.state,
+          country_name: "Brasil",
+        },
+      },
       external_reference: order.externalReference,
       back_urls: {
         success: `${env.FRONTEND_ORIGIN}/pagamento/sucesso`,
@@ -436,7 +563,7 @@ export default {
         return json(env, {
           ok: db?.ok === 1,
           service: "verani-ferraro-api",
-          version: "0.4.0",
+          version: "0.5.0",
           database: db?.ok === 1 ? "connected" : "unavailable",
           mercadoPago: env.MERCADO_PAGO_ACCESS_TOKEN ? "configured" : "missing",
           webhook: env.MERCADO_PAGO_WEBHOOK_SECRET ? "configured" : "missing",
@@ -453,9 +580,11 @@ export default {
       if (request.method === "POST" && url.pathname === "/checkout") {
         let body: unknown;
         try { body = await request.json(); } catch { throw new HttpError(400, "JSON inválido."); }
-        const quote = await buildQuote(env, parseItems(body));
-        const order = await saveDraftOrder(env, quote);
-        return json(env, await createPreference(env, quote, order));
+        const items = parseItems(body);
+        const customer = parseCustomer(body);
+        const quote = await buildQuote(env, items);
+        const order = await saveDraftOrder(env, quote, customer);
+        return json(env, await createPreference(env, quote, order, customer));
       }
 
       return json(env, { error: "Rota não encontrada." }, 404);
