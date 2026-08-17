@@ -5,7 +5,8 @@
   "compatibility_date": "2026-08-15",
   "workers_dev": true,
   "vars": {
-    "FRONTEND_ORIGIN": "https://verani-ferraro.pages.dev"
+    "FRONTEND_ORIGIN": "https://verani-ferraro.pages.dev",
+    "MERCADO_PAGO_ENV": "test"
   },
   "d1_databases": [
     {
