@@ -104,7 +104,12 @@ async function exportProducts(env: Env) {
   ]);
 
   return csv(
-    ["Product id", "SKU", "Supplier url", "SKU (Supplier SKU)"],
+    [
+      "product_id",
+      "SKU（your product SKU）",
+      "Supplier_url（Optional）",
+      "SKU（Supplier SKU）（Optional）",
+    ],
     rows,
     `vf-dsers-products-${env.MERCADO_PAGO_ENV}.csv`,
   );
@@ -205,7 +210,7 @@ export default {
         const data = (await response.clone().json()) as Record<string, unknown>;
         return new Response(JSON.stringify({
           ...data,
-          version: "0.7.1",
+          version: "0.7.2",
           dsersExport: env.ADMIN_API_KEY ? "configured" : "missing",
         }), { status: response.status, headers: response.headers });
       } catch {
