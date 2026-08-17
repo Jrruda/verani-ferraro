@@ -88,7 +88,8 @@ async function prepareFulfillments(env: Env, orderId: string) {
     `SELECT status,fulfillment_status FROM orders WHERE id=?1 LIMIT 1`,
   ).bind(orderId).first<{ status: string; fulfillment_status: string }>();
 
-  if (!order || order.status !== "approved") return;
+  if (!order) throw new Error(`Pedido ${orderId} não encontrado.`);
+  if (order.status !== "approved") throw new Error(`Pedido ${orderId} não está approved.`);
   if (["processing", "partially_shipped", "shipped", "delivered", "cancelled"].includes(order.fulfillment_status)) return;
 
   const result = await env.DB.prepare(
@@ -158,6 +159,34 @@ async function prepareFulfillments(env: Env, orderId: string) {
   ).bind(orderId).run();
 }
 
+async function fulfillmentSummary(env: Env, orderId: string) {
+  const order = await env.DB.prepare(
+    `SELECT id,status,fulfillment_status,total_cents FROM orders WHERE id=?1 LIMIT 1`,
+  ).bind(orderId).first();
+  const fulfillments = await env.DB.prepare(
+    `SELECT f.id,f.supplier_id,s.name AS supplier_name,f.status,
+            COUNT(fi.id) AS item_count,SUM(fi.quantity) AS total_units
+     FROM fulfillments f
+     LEFT JOIN suppliers s ON s.id=f.supplier_id
+     LEFT JOIN fulfillment_items fi ON fi.fulfillment_id=f.id
+     WHERE f.order_id=?1
+     GROUP BY f.id,f.supplier_id,s.name,f.status
+     ORDER BY f.id`,
+  ).bind(orderId).all();
+  const items = await env.DB.prepare(
+    `SELECT oi.name_snapshot,oi.kind,oi.product_id,fi.quantity,
+            ps.supplier_variant_label,ps.cost_cents,ps.supplier_url,
+            f.supplier_id
+     FROM fulfillment_items fi
+     JOIN fulfillments f ON f.id=fi.fulfillment_id
+     JOIN order_items oi ON oi.id=fi.order_item_id
+     LEFT JOIN product_sources ps ON ps.id=fi.product_source_id
+     WHERE f.order_id=?1
+     ORDER BY f.id,oi.id`,
+  ).bind(orderId).all();
+  return { order, fulfillments: fulfillments.results ?? [], items: items.results ?? [] };
+}
+
 async function orderIdFromPayment(env: Env, paymentId: string) {
   const payment = await env.DB.prepare(
     `SELECT order_id FROM payments WHERE provider='mercado-pago' AND provider_payment_id=?1 LIMIT 1`,
@@ -168,15 +197,38 @@ async function orderIdFromPayment(env: Env, paymentId: string) {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const webhookCopy = url.pathname === "/webhooks/mercado-pago" ? request.clone() : null;
 
+    if (url.pathname === "/test/fulfillment/prepare" && request.method === "POST") {
+      if (env.MERCADO_PAGO_ENV !== "test") {
+        return new Response(JSON.stringify({ error: "Not available outside test environment." }), {
+          status: 404,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+      try {
+        const body = (await request.json()) as { orderId?: string };
+        if (!body.orderId) throw new Error("orderId é obrigatório.");
+        await prepareFulfillments(env, body.orderId);
+        return new Response(JSON.stringify({ ok: true, ...(await fulfillmentSummary(env, body.orderId)) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Falha no teste de fulfillment." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+    }
+
+    const webhookCopy = url.pathname === "/webhooks/mercado-pago" ? request.clone() : null;
     const response = await baseWorker.fetch(request, env);
 
     if (url.pathname === "/health" && request.method === "GET" && response.ok) {
       try {
         const data = (await response.clone().json()) as Record<string, unknown>;
         return new Response(
-          JSON.stringify({ ...data, version: "0.6.0", fulfillment: "configured" }),
+          JSON.stringify({ ...data, version: "0.6.1", fulfillment: "configured" }),
           { status: response.status, headers: response.headers },
         );
       } catch {
