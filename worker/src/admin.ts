@@ -51,7 +51,7 @@ function csvCell(value: unknown) {
 
 function csv(headers: string[], rows: unknown[][], filename: string) {
   const body = [headers.map(csvCell).join(","), ...rows.map((row) => row.map(csvCell).join(","))].join("\r\n");
-  return new Response(`\uFEFF${body}`, {
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
@@ -205,7 +205,7 @@ export default {
         const data = (await response.clone().json()) as Record<string, unknown>;
         return new Response(JSON.stringify({
           ...data,
-          version: "0.7.0",
+          version: "0.7.1",
           dsersExport: env.ADMIN_API_KEY ? "configured" : "missing",
         }), { status: response.status, headers: response.headers });
       } catch {
